@@ -1,104 +1,106 @@
 @echo off
 setlocal EnableDelayedExpansion
 
-:: Configuration
+:: ============================================================
+:: CONFIGURATION
+:: ============================================================
 set "FILENAME=cloudflared.exe"
 set "URL=https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe"
 
-:: -----------------------------------------------------------------------------
-:: SETUP: CONSOLE UI
-:: -----------------------------------------------------------------------------
+:: Get the full path of the directory where this script is running
+set "INSTALL_DIR=%~dp0"
+:: Remove trailing backslash for cleaner PATH manipulation
+if "%INSTALL_DIR:~-1%"=="\" set "INSTALL_DIR=%INSTALL_DIR:~0,-1%"
+
 echo.
 echo ============================================================
-echo    CLOUDFLARED INSTALLATION MANAGER
+echo    CLOUDFLARED INSTALLER + PATH CONFIG
 echo ============================================================
-echo [i] Time: %TIME%
-echo [i] Target: %FILENAME%
+echo [i] Install Location: %INSTALL_DIR%
 
-:: -----------------------------------------------------------------------------
-:: CHECK 1: EXISTING INSTALLATION
-:: -----------------------------------------------------------------------------
-if exist "%FILENAME%" (
-    echo [i] File found locally. Checking integrity...
-    
-    :: Attempt to run version command to verify binary works
-    "%FILENAME%" --version >nul 2>&1
-    
+:: ============================================================
+:: STEP 1: CHECK & DOWNLOAD
+:: ============================================================
+if exist "%INSTALL_DIR%\%FILENAME%" (
+    echo [i] Found existing binary. Checking integrity...
+    "%INSTALL_DIR%\%FILENAME%" --version >nul 2>&1
     if !errorlevel! equ 0 (
         echo [+] Integrity Check: PASSED.
-        echo.
-        echo ------------------------------------------------------------
-        echo [i] CURRENT INSTALLED VERSION:
-        "%FILENAME%" --version 2>&1
-        echo ------------------------------------------------------------
-        echo.
-        echo [i] Cloudflared is already installed and valid.
-        echo [i] Download sequence skipped.
-        goto :FINISH
+        goto :CHECK_PATH
     ) else (
-        echo [!] Integrity Check: FAILED.
-        echo [!] Existing file is corrupt or invalid.
-        echo [i] Proceeding to redownload...
+        echo [!] Integrity Check: FAILED. Redownloading...
     )
-) else (
-    echo [i] No existing installation found.
 )
 
-:: -----------------------------------------------------------------------------
-:: CHECK 2: SYSTEM REQUIREMENTS
-:: -----------------------------------------------------------------------------
-where curl >nul 2>nul
-if %errorlevel% neq 0 (
-    echo [!] CRITICAL ERROR: 'curl' not found.
-    echo     This script requires Windows 10 ^(1803+^) or Windows 11.
-    exit /b 1
-)
-
-:: -----------------------------------------------------------------------------
-:: DOWNLOAD PHASE
-:: -----------------------------------------------------------------------------
-echo.
-echo ============================================================
-echo    STARTING DOWNLOAD SEQUENCE
-echo ============================================================
-echo [i] Source: %URL%
-echo [i] Starting transfer...
-echo     (Verbose logs and Progress Bar enabled)
+echo [i] Downloading Cloudflared...
+echo     (Verbose Output Enabled)
 echo ------------------------------------------------------------
 
-:: CURL FLAGS:
-:: -L : Follow redirects
-:: -# : Hash-based Progress Bar (Visual)
-:: -v : Verbose (Headers/Handshake for debugging)
-:: -f : Fail silently (for error code handling)
-:: -o : Output filename
-:: -w : Write-out (Clean summary report)
+:: Download with curl (Visual + Verbose)
+curl -L -# -v -f -o "%INSTALL_DIR%\%FILENAME%" "%URL%" -w "\n[i] DOWNLOAD REPORT:\n    - Status: %%{http_code}\n    - Size:   %%{size_download} bytes\n" 2>&1
 
-curl -L -# -v -f -o "%FILENAME%" "%URL%" -w "\n[i] DOWNLOAD REPORT:\n    - Status: %%{http_code}\n    - Size:   %%{size_download} bytes\n    - Speed:  %%{speed_download} bps\n    - Time:   %%{time_total} sec\n" 2>&1
-
-:: -----------------------------------------------------------------------------
-:: VALIDATION PHASE
-:: -----------------------------------------------------------------------------
-echo.
-echo ------------------------------------------------------------
 if %errorlevel% neq 0 (
-    echo [!] DOWNLOAD FAILED.
-    echo [!] Exit Code: %errorlevel%
+    echo [!] CRITICAL: Download failed.
     exit /b %errorlevel%
 )
 
-if exist "%FILENAME%" (
-    echo [+] File Download Verified.
-    echo [+] New Version:
-    "%FILENAME%" --version 2>&1
+:: ============================================================
+:: STEP 2: ADD TO WINDOWS PATH (The "Install" Part)
+:: ============================================================
+:CHECK_PATH
+echo.
+echo ============================================================
+echo    PATH ENVIRONMENT SETUP
+echo ============================================================
+echo [i] Checking if install directory is in User PATH...
+
+:: We use PowerShell to check and set the path because it is safer than setx
+:: This avoids the 1024 character limit truncation bug common in Batch files.
+
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+    "$target = '%INSTALL_DIR%'; " ^
+    "$currentPath = [Environment]::GetEnvironmentVariable('Path', 'User'); " ^
+    "if ($currentPath -split ';' -contains $target) { " ^
+    "    Write-Host '[+] Path already configured.'; " ^
+    "    exit 0; " ^
+    "} else { " ^
+    "    Write-Host '[i] Adding directory to User Path...'; " ^
+    "    $newPath = $currentPath + ';' + $target; " ^
+    "    [Environment]::SetEnvironmentVariable('Path', $newPath, 'User'); " ^
+    "    exit 1; " ^
+    "}"
+
+:: Capture the result of the PowerShell script
+set "PATH_RESULT=%errorlevel%"
+
+if %PATH_RESULT% equ 1 (
+    echo [+] SUCCESS: Directory added to PATH.
+    echo [!] NOTE: You must RESTART your app/terminal to see changes globally.
 ) else (
-    echo [!] CRITICAL: File missing despite successful exit code.
+    echo [i] Path is already correct. No changes needed.
+)
+
+:: ============================================================
+:: STEP 3: VERIFICATION
+:: ============================================================
+echo.
+echo ============================================================
+echo    FINAL VERIFICATION
+echo ============================================================
+
+:: Temporarily add to current session path so we can test immediately without restart
+set "PATH=%PATH%;%INSTALL_DIR%"
+
+echo [i] Running 'cloudflared --version' from command line...
+cloudflared --version 2>&1
+
+if %errorlevel% equ 0 (
+    echo.
+    echo [+] INSTALLATION SUCCESSFUL.
+    echo [i] You can now use 'cloudflared' in any new CMD window.
+) else (
+    echo [!] Something went wrong verify the binary.
     exit /b 1
 )
 
-:FINISH
-echo.
-echo ============================================================
-echo    PROCESS COMPLETE
-echo ============================================================
 exit /b 0
